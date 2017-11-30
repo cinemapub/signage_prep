@@ -43,3 +43,12 @@ Simple bash tools to: rescale/letterbox videos &amp; images, add fadeout/pause a
 	    <action>  : [parameter] what to do: APPEND/PREPEND/SCALE/BACKGROUND/EXTRACT
 	    <input>   : [parameter] input file name
 	    <output>  : [parameter] output file name
+
+
+## Sample images and video
+
+* `camera_square.jpg`: [Photo by Alexander Andrews on Unsplash](https://unsplash.com/photos/sNPfZxrBYdQ "Photo by Alexander Andrews on Unsplash")
+* `dog_landscape.jpg`: [Photo by Aaron Barnaby on Unsplash](https://unsplash.com/photos/dp2m5glF2Y4 "Photo by Aaron Barnaby on Unsplash")
+* `alex_portrait.jpg`: [Photo by Alex Iby on Unsplash](https://unsplash.com/photos/470eBDOc8bk "Photo by Alex Iby on Unsplash")
+* `fashion_divx.mov, bunny_divx.mp4`: [DivX Sample videos](http://www.divx.com/en/devices/profiles/video)
+* `lights.mp4`: [Videezy free video](https://www.videezy.com/backgrounds/5064-distant-lights-4k-motion-background-loop)
