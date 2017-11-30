@@ -21,11 +21,9 @@ runasroot=0
 # where <type> = 1 for single parameters or <type> = n for (last) parameter that can be a list
 list_options() {
 echo -n "
-flag|h|help|show usage
+flag|m|mute|remove sound
 flag|q|quiet|no output
 flag|v|verbose|output more
-flag|f|force|do not ask for confirmation
-flag|m|mute|remove sound
 option|s|scale|scale method: box/stretch/blur|box
 option|b|blur|blur strength|10
 option|c|col|color to add|black
@@ -108,8 +106,6 @@ success() { out " \033[1;32m✔\033[0m  $@"; }
 log()     { [[ $verbose -gt 0 ]] && out "$@";}
 notify()  { [[ $? == 0 ]] && success "$@" || alert "$@"; }
 escape()  { echo $@ | sed 's/\//\\\//g'; }         # escape / as \/
-
-confirm() { (($force)) && return 0; read -p "$1 [y/N] " -n 1; echo " "; [[ $REPLY =~ ^[Yy]$ ]];}
 
 is_set()     { local target=$1 ; [[ $target -gt 0 ]] ; }
 is_empty()     { local target=$1 ; [[ -z $target ]] ; }
