@@ -27,6 +27,8 @@ flag|v|verbose|output more
 option|s|scale|scale method: box/stretch/blur|box
 option|b|blur|blur strength|10
 option|c|col|color to add|black
+option|l|logdir|folder for log files|log
+option|t|tmpdir|folder for temp files|.tmp
 param|1|action|what to do: SCALE
 param|1|input|input image filename
 param|1|output|output image filename
@@ -47,13 +49,6 @@ readonly TMPDIR=.tmp
 PROGDATE=$(stat -c %y "$PROGDIR/$PROGNAME" 2>/dev/null | cut -c1-16) # generic linux
 if [[ -z $PROGDATE ]] ; then
   PROGDATE=$(stat -f "%Sm" "$PROGDIR/$PROGNAME" 2>/dev/null) # for MacOS
-fi
-if [ ! -d $TMPDIR ] ; then
-	# create cache dir
-	mkdir $TMPDIR
-else
-	# clean up old files in cache dir
-	find $TMPDIR -mtime +1 -exec rm {} \;
 fi
 
 readonly ARGS="$@"
@@ -243,8 +238,8 @@ showinfo_video(){
   filesize=$(stat -c%s "$1")
   kbsize=$(expr $filesize / 1000)
   out "     | $kbsize KB"
-  bitrate=$(echo $filesize \* 8 / \( $duration \* 1000 \) | bc)
-  out "     | $bitrate Kbps"
+  #bitrate=$(expr $filesize \* 8 / \( $duration \* 1000 \))
+  #out "     | $bitrate Kbps"
 }
 
 showinfo_image(){
@@ -256,8 +251,8 @@ showinfo_image(){
   filesize=$(stat -c%s "$1")
   kbsize=$(expr $filesize / 1000)
   out "     | $kbsize KB"
-  compression=$(echo $filesize \* 100 / \($width \* $height \* 3 \) | bc)
-  out "     | Compressed $compression %"
+  #compression=$(expr $filesize \* 100 / \($width \* $height \* 3 \))
+  #out "     | Compressed $compression %"
 }
 
 get_ffprobe() {
@@ -297,6 +292,20 @@ run_ffmpeg(){
 }
 
 main() {
+  if [ ! -d $tmpdir ] ; then
+    log "Create tmp folder [$tmpdir]"
+    mkdir "$tmpdir"
+  else
+    log "cleanup tmp folder [$tmpdir]"
+    find "$tmpdir" -mtime +1 -exec rm {} \;
+  fi
+  if [ ! -d $logdir ] ; then
+    log "Create log folder [$logdir]"
+    mkdir "$logdir"
+  else
+    log "cleanup log folder [$logdir]"
+    find "$logdir" -mtime +7 -exec rm {} \;
+  fi
   fformat="-q:v 1"
 
   log "FFMPEG OUTPUT FORMAT = [$fformat]"

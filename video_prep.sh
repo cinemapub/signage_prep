@@ -31,34 +31,27 @@ option|g|bg|background image|empty.jpg
 option|h|hout|output video height|1920
 option|r|rat|output video framerate|25
 option|s|scale|scale method: box/stretch/blur|box
+option|l|logdir|folder for log files|log
+option|t|tmpdir|folder for temp files|.tmp
 option|w|wout|output video width|1080
-param|1|action|what to do: APPEND/PREPEND/BOX/BACKGROUND/EXTRACT
+param|1|action|what to do: APPEND/PREPEND/SCALE/BACKGROUND/EXTRACT
 param|1|input|input file name
 param|1|output|output file name
 "
 }
 
 # change program version to your own release logic
+readonly PROGNAME=$(basename $0)
+readonly PROGDIR=$(cd $(dirname $0); pwd)
 readonly PROGVERS="v1.0"
 readonly PROGAUTH="p.forret@brightfish.be"
 
 #####################################################################
 ################### DO NOT MODIFY BELOW THIS LINE ###################
 
-readonly PROGNAME=$(basename $0)
-readonly PROGDIR=$(cd $(dirname $0); pwd)
-#readonly TMPDIR=$TMP/$(basename $0 .sh)
-readonly TMPDIR=.tmp
 PROGDATE=$(stat -c %y "$PROGDIR/$PROGNAME" 2>/dev/null | cut -c1-16) # generic linux
 if [[ -z $PROGDATE ]] ; then
   PROGDATE=$(stat -f "%Sm" "$PROGDIR/$PROGNAME" 2>/dev/null) # for MacOS
-fi
-if [ ! -d $TMPDIR ] ; then
-	# create cache dir
-	mkdir $TMPDIR
-else
-	# clean up old files in cache dir
-	find $TMPDIR -mtime +1 -exec rm {} \;
 fi
 
 readonly ARGS="$@"
@@ -243,13 +236,12 @@ showinfo_video(){
   duration=$(get_ffprobe "$1" "duration" | awk '{printf "%.2f", $1}')
   nbframes=$(get_ffprobe "$1" "nb_frames")
   framerate=$(get_ffprobe "$1" "avg_frame_rate")
-  framerate=$(echo $framerate | sed 's#/1##g')
+  framerate=$(echo "scale=2; $framerate" | bc)
   out "     | $duration sec ($nbframes frames @ $framerate fps)"
   filesize=$(stat -c%s "$1")
   kbsize=$(expr $filesize / 1000)
-  out "     | $kbsize KB"
   bitrate=$(echo $filesize \* 8 / \( $duration \* 1000 \) | bc)
-  out "     | $bitrate Kbps"
+  out "     | $kbsize KB @ $bitrate Kbps"
 }
 
 showinfo_image(){
@@ -270,7 +262,7 @@ get_ffprobe() {
 	# $2 = parameters
 	# reads lines like 'width=1080' and gives back 1080
 		uniq=$(echo "$1" | md5sum | cut -c1-6)
-		tmp_probe=$TMPDIR/$(basename $1 | cut -c1-10).$uniq.probe.txt
+		tmp_probe=$tmpdir/$(basename $1 | cut -c1-10).$uniq.probe.txt
 		if [ ! -s "$tmp_probe" -o "$1" -nt "$tmp_probe" ] ; then
 			# only first time
 			ffprobe -show_streams "$1" > $tmp_probe 2>/dev/null
@@ -282,7 +274,7 @@ run_ffmpeg(){
   uniq=$(echo "$*" | md5sum | cut -c1-6)
   lastfile=$(echo "$*" | awk '{print $NF}' )
   lname=$(basename $lastfile)
-  logfile="log/ff.$lname.$uniq.log"
+  logfile="$logdir/ff.$lname.$uniq.log"
   log "logfile = [$logfile]"
   if [ -f "/c/tools/ffmpeg64/ffmpeg.exe" ] ; then
     FFMPEG=/c/tools/ffmpeg64/ffmpeg.exe
@@ -303,6 +295,20 @@ run_ffmpeg(){
 
 
 main() {
+  if [ ! -d $tmpdir ] ; then
+    log "Create tmp folder [$tmpdir]"
+    mkdir "$tmpdir"
+  else
+    log "cleanup tmp folder [$tmpdir]"
+    find "$tmpdir" -mtime +1 -exec rm {} \;
+  fi
+  if [ ! -d $logdir ] ; then
+    log "Create log folder [$logdir]"
+    mkdir "$logdir"
+  else
+    log "cleanup log folder [$logdir]"
+    find "$logdir" -mtime +7 -exec rm {} \;
+  fi
   fformat="-r $rat -b:v $bps"
   if [ -n "$mute" ] ; then
     fformat="$fformat -an"
@@ -341,11 +347,10 @@ main() {
 			# get last frame
 			frm_last=$(get_ffprobe "$input" "nb_frames")
 			frm_prev=$(expr $frm_last - 1)
-			log_last=$TMPDIR/$bname.last.log
-			png_last=$TMPDIR/$bname.last.png
+			png_last=$tmpdir/$bname.last.png
 			out "- grab last frame image ($frm_last)"
 			run_ffmpeg -i "$input" -vf "select='eq(n,$frm_prev)'" -vframes 1 -y $png_last
-			vid_last=$TMPDIR/$bname.last.mp4
+			vid_last=$tmpdir/$bname.last.mp4
 			if [ "$col" == "fade" ] ; then
 				out "- create fade outro ($dur sec)"
 				fadframes=$(echo "$dur	$rat" | awk '{printf "%.0f" ,$1*$2}')
@@ -355,11 +360,6 @@ main() {
 				run_ffmpeg -r $rat -loop 1 -i $png_last -c:v $vid_cod -t $dur -pix_fmt $pix_fmt -b:v $bps -y $vid_last
 			fi
 			out "- create $output ..."
-			# ffmpeg -loop 1 -i img.jpg -c:v libx264 -t 30 -pix_fmt yuv420p out.mp4
-			# via https://trac.ffmpeg.org/wiki/Slideshow
-			
-			# ffmpeg -i input1.mp4 -i input2.webm -filter_complex "[0:v:0] [0:a:0] [1:v:0] [1:a:0] concat=n=2:v=1:a=1 [v] [a]" -map "[v]" -map "[a]" <encoding options> output.mkv
-			# via https://trac.ffmpeg.org/wiki/Concatenate
 			run_ffmpeg -i "$input" -i "$vid_last" -filter_complex "[0:v:0] [1:v:0] concat=n=2:v=1:a=0 [v]" -map "[v]" $fformat -pix_fmt $pix_fmt -y "$output"
 			# 
 			;;
@@ -395,7 +395,6 @@ main() {
 	    height=$(get_ffprobe "$input" "height")
 	    pix_fmt=$(get_ffprobe "$input" "pix_fmt")
 	    bname=$(basename "$input")
-	    # scale=320:240:force_original_aspect_ratio=decrease,pad=320:240:(ow-iw)/2:(oh-ih)/2
         case $scale in
           BOX|box)
             log "SCALE with method [(letter)box]"
@@ -403,60 +402,24 @@ main() {
             ;;
           STRETCH|stretch)
             log "SCALE with method [stretch]"
-            run_ffmpeg -i "$input" -vf "scale=w=1080:h=1920" $fformat -y "$output"
+            run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout" $fformat -y "$output"
             ;;
           IMAGE|image)
-            # create background
-            log "SCALE with method [blur]"
-            tmp_bg=$TMPDIR/$(basename "$input" | cut -c1-10).bg.png
-            w2=$(expr $width / \( $blur \* 4 \) \* 4 )
-            h2=$(expr $height / \( $blur \* 4 \) \* 4 )
-            radius=5
-            if [ $blur -le 5 ] ; then
-              radius=2
+            # create background with stretch
+            log "SCALE with method [image] (background)"
+            if [ ! -f "$bg" ] ; then
+              die "Cannot find background picture [$bg]"
             fi
-            run_ffmpeg -i "$input" -vf "scale=w=$w2:h=$h2, boxblur=$radius:1, scale=w=1080:h=1920" $fformat -y "$tmp_bg"
+            tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.png
+            run_ffmpeg -i "$bg" -vf "scale=w=$wout:h=$hout" $fformat -y "$tmp_bg"
             # now overlay
-            run_ffmpeg -i "$tmp_bg" -i "$input" -filter_complex " [0:v][1:v] overlay=0:(H-h)/2" $fformat -y "$output"
+            duration=$(get_ffprobe "$input" "duration" | awk '{printf "%.2f", $1}')
+            run_ffmpeg -loop 1 -i "$tmp_bg" -i "$input" -filter_complex "[1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [pip];[0:v][pip] overlay=0:(H-h)/2" -t $duration $fformat -y "$output"
             ;;
           *)
           die "Cannot scale with method [$scale]"
         esac
 	    showinfo_video $output 
-	    ;;
-
-    BACK|back|BACKGROUND|background )
-# ffmpeg -r 25 -loop 1 -i img/PHD.jpg -i mov/Paddington.mov -filter_complex "[1:v]scale=w=1080:h=-1 [pip]; [0:v][pip] overlay=0:500" -pix_fmt yuv420p -t 10 -b:v 5M  -y mov/test.mov
-
-	    width=$(get_ffprobe "$input" "width")
-	    height=$(get_ffprobe "$input" "height")
-	    out "Resolution: $width x $height"
-	    pix_fmt=$(get_ffprobe "$input" "pix_fmt")
-	    vid_cod=$(get_ffprobe "$input" "codec_name")
-	    out "Encoding  : $vid_cod ($pix_fmt)"
-	    duration=$(get_ffprobe "$input" "duration" | awk '{printf "%.2f", $1}')
-	    nbframes=$(get_ffprobe "$input" "nb_frames")
-	    framerate=$(get_ffprobe "$input" "avg_frame_rate")
-	    framerate=$(echo $framerate | sed 's#/1##g')
-	    bname=$(basename "$input")
-	    out "Duration  : $duration sec ($nbframes frames @ $framerate fps)"
-	    log_out=$TMPDIR/$bname.scale.log
-	    log "Log file = [$log_out]"
-
-	    maxheight=$(expr $width \* 16 / 9)
-	    log "max height = $maxheight"
-	    if [ $height -lt $maxheight ] ; then
-	      # height is smaller => letterbox = black top and bottom
-	      log "create letterbox [$output] ..."
-	      log "ffmpeg -i '$input' -vf 'scale=w=1080:h=-1, pad=1080:1920:0:(1920-ih)/2' $fformat -pix_fmt $pix_fmt -y '$output'"
-	      ffmpeg -i "$input" -vf "scale=w=1080:h=-1, pad=1080:1920:0:(1920-ih)/2" $fformat -pix_fmt $pix_fmt -y "$output" 2> $log_out
-	    else
-	      # height is more => pilarbox = black left and right
-	      log "create pillarbox [$output] ..."
-	      ffmpeg -i "$input" -vf "scale=w=-1:h=1920, pad=1080:1920:(1080-iw)/2:0" $fformat -pix_fmt $pix_fmt -y "$output" 2> $log_out
-	    fi
-	    newdur=$(get_ffprobe "$output" "duration" | awk '{printf "%.2f", $1}')
-	    out "New duration: $newdur sec"
 	    ;;
 
 	*)
