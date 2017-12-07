@@ -21,7 +21,6 @@ runasroot=0
 # where <type> = 1 for single parameters or <type> = n for (last) parameter that can be a list
 list_options() {
 echo -n "
-flag|m|mute|remove sound
 flag|q|quiet|no output
 flag|v|verbose|output more
 option|s|scale|scale method: box/stretch/blur|box
@@ -29,6 +28,7 @@ option|b|blur|blur strength|10
 option|c|col|color to add|black
 option|l|logdir|folder for log files|log
 option|t|tmpdir|folder for temp files|.tmp
+option|w|wxh|output dimensions|1080x1920
 param|1|action|what to do: SCALE
 param|1|input|input image filename
 param|1|output|output image filename
@@ -309,6 +309,10 @@ main() {
   fformat="-q:v 1"
 
   log "FFMPEG OUTPUT FORMAT = [$fformat]"
+  wout=$(echo $wxh | cut -dx -f1)
+  hout=$(echo $wxh | cut -dx -f2)
+  log "Output dimensions: [$wxh] -> $wout x $hout"
+
   case $action in
 
     SCALE|scale )
@@ -320,42 +324,76 @@ main() {
 
       if [ $height -eq $maxheight ] ; then
         log "just scale (correct aspect ratio)"
-        run_ffmpeg -i "$input" -vf "scale=w=1080:h=1920" $fformat -y "$output"
-      elif [ $height -lt $maxheight ] ; then
+        run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout,format=rgb24" $fformat -y "$output"
+      else
 	      # height is smaller => letterbox = black top and bottom
 	      log "create letterbox [$output] ..."
         # create background
         case $scale in
           BOX|box)
             log "SCALE with method [(letter)box]"
-            run_ffmpeg -i "$input" -vf 'scale=w=1080:h=-4, pad=1080:1920:0:(1920-ih)/2' $fformat -y "$output"
+            run_ffmpeg -i "$input" \
+            	-vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease, pad=$wout:$hout:($wout-iw)/2:($hout-ih)/2:$col,format=rgb24" \
+            	$fformat -y "$output"
             ;;
+
           STRETCH|stretch)
             log "SCALE with method [stretch]"
-            run_ffmpeg -i "$input" -vf "scale=w=1080:h=1920" $fformat -y "$output"
+            run_ffmpeg -i "$input" \
+            	-vf "scale=w=$wout:h=$hout" \
+            	$fformat -y "$output"
             ;;
+
           BLUR|blur)
             # create background
             log "SCALE with method [blur]"
-            tmp_bg=$TMPDIR/$(basename "$input" | cut -c1-10).bg.png
-            w2=$(expr $width / \( $blur \* 4 \) \* 4 )
-            h2=$(expr $height / \( $blur \* 4 \) \* 4 )
-            radius=5
-            if [ $blur -le 5 ] ; then
-              radius=2
+			tmp_bg=$TMPDIR/$(basename "$input" | cut -c1-10).$wxh.$scale.$blur.bg.jpg
+            if [ $blur -eq 0 ] ; then
+				#run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=increase, crop=w=$wout:h=$hout:(iw-$wout)/2:(ih-$hout)/2" $fformat -y "$tmp_bg"
+				run_ffmpeg -i "$input" \
+					-vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=increase, crop=w=$wout:h=$hout, format=rgb24" \
+					$fformat -y "$tmp_bg"
+           elif [ $blur -lt 0 ] ; then
+        	    tmp_bg1=$TMPDIR/$(basename "$input" | cut -c1-10).$wxh.$blur.bg1.jpg
+	            radius=5
+	            blur=$(expr 0 - $blur)
+	            if [ $blur -le 5 ] ; then
+	              radius=2
+	            fi
+	            w2=$(expr $width / \( $blur \* 4 \) \* 4 )
+	            h2=$(expr $height / \( $blur \* 4 \) \* 4 )
+
+				w3=$(expr \( $width  + $wout \) / 2 )
+				h3=$(expr \( $height + $hout \) / 2 )
+				run_ffmpeg -i "$input" \
+					-vf "scale=w=$w2:h=$h2, boxblur=$radius:1, scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease, format=rgb24" \
+					$fformat -y "$tmp_bg1"
+
+				run_ffmpeg -i "$tmp_bg1" -i "$tmp_bg1" \
+					-filter_complex "[0:v] scale=w=$wout:h=$hout [back] ; [1:v] scale=w=($wout+iw)/2:h=($hout+ih)/2[front] ; [back][front] overlay=(W-w)/2:(H-h)/2, boxblur=$radius:1, format=rgb24" \
+					$fformat -y "$tmp_bg"
+           else
+	            radius=5
+	            if [ $blur -le 5 ] ; then
+	              radius=2
+	            fi
+	            w2=$(expr $width / \( $blur \* 4 \) \* 4 )
+	            h2=$(expr $height / \( $blur \* 4 \) \* 4 )
+				run_ffmpeg -i "$input" \
+					-vf "scale=w=$w2:h=$h2, boxblur=$radius:1, scale=w=$wout:h=$hout, format=rgb24" \
+					$fformat -y "$tmp_bg"
             fi
-            run_ffmpeg -i "$input" -vf "scale=w=$w2:h=$h2, boxblur=$radius:1, scale=w=1080:h=1920" $fformat -y "$tmp_bg"
+
             # now overlay
-            run_ffmpeg -i "$tmp_bg" -i "$input" -filter_complex " [0:v][1:v] overlay=0:(H-h)/2" $fformat -y "$output"
+            run_ffmpeg -i "$tmp_bg" -i "$input" \
+				-filter_complex "[1:v]scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease[front] ; [0:v][front] overlay=(W-w)/2:(H-h)/2,format=rgb24" \
+				$fformat -y "$output"
             ;;
+
           *)
           die "Cannot scale with method [$scale]"
         esac
-	    else
-	      # height is more => pilarbox = black left and right
-	      log "create pillarbox [$output] ..."
-	      run_ffmpeg -i "$input" -vf "scale=w=-1:h=1920, pad=1080:1920:(1080-iw)/2:0" $fformat -y "$output"
-	    fi
+	  fi
       showinfo_image "$output"
 	    ;;
 

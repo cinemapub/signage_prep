@@ -26,14 +26,13 @@ flag|q|quiet|no output
 flag|v|verbose|output more
 option|b|bps|output video bitrate|6M
 option|c|col|color to add|black
-option|d|dur|add duration in seconds|1
+option|d|dur|add duration in seconds|2
 option|g|bg|background image|empty.jpg
-option|h|hout|output video height|1920
 option|r|rat|output video framerate|25
 option|s|scale|scale method: box/stretch/blur|box
 option|l|logdir|folder for log files|log
 option|t|tmpdir|folder for temp files|.tmp
-option|w|wout|output video width|1080
+option|w|wxh|output dimensions|1080x1920
 param|1|action|what to do: APPEND/PREPEND/SCALE/BACKGROUND/EXTRACT
 param|1|input|input file name
 param|1|output|output file name
@@ -314,6 +313,10 @@ main() {
     fformat="$fformat -an"
   fi
 
+  wout=$(echo $wxh | cut -dx -f1)
+  hout=$(echo $wxh | cut -dx -f2)
+  log "Output dimensions: [$wxh] -> $wout x $hout"
+
   log "FFMPEG OUTPUT FORMAT = [$fformat]"
   case $action in
     LOOP|loop )
@@ -321,10 +324,10 @@ main() {
 		height=$(get_ffprobe "$input" "height")
     	showinfo_image "$input"
 	    if [ $width -eq $wout -a $height -eq $hout ] ; then
-	      log "> create [$output] (Vertical HD)"
+	      log "create [$output] (Vertical HD)"
 	      run_ffmpeg -loop 1 -i "$input" $fformat -t $dur -pix_fmt yuv420p -y "$output"
 	    else
-	      log "> create [$output] (Scale to Vertical HD)"
+	      log "create [$output] (Scale to Vertical HD)"
 	      run_ffmpeg -loop 1 -i "$input" -filter_complex "scale=w=$wout:h=$hout" $fformat -t $dur -pix_fmt yuv420p -y "$output"
 	    fi
 	    showinfo_video "$output"
@@ -400,10 +403,20 @@ main() {
             log "SCALE with method [(letter)box]"
 			run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease, pad=$wout:$hout:($wout-iw)/2:($hout-ih)/2" $fformat -pix_fmt $pix_fmt -y "$output"
             ;;
+
           STRETCH|stretch)
             log "SCALE with method [stretch]"
-            run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout" $fformat -y "$output"
+            run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout" \
+              $fformat -y "$output"
             ;;
+
+          BLUR|blur)
+            log "SCALE with method [blur]"
+            run_ffmpeg -i "$input" -i "$input" \
+              -filter_complex "[0:v] scale=w=$wout:h=$hout, boxblur=10:1 [back]; [1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front] ; [back][front] overlay=(W-w)/2:(H-h)/2 " \
+              $fformat -y "$output"
+            ;;
+
           IMAGE|image)
             # create background with stretch
             log "SCALE with method [image] (background)"
@@ -416,6 +429,7 @@ main() {
             duration=$(get_ffprobe "$input" "duration" | awk '{printf "%.2f", $1}')
             run_ffmpeg -loop 1 -i "$tmp_bg" -i "$input" -filter_complex "[1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [pip];[0:v][pip] overlay=0:(H-h)/2" -t $duration $fformat -y "$output"
             ;;
+
           *)
           die "Cannot scale with method [$scale]"
         esac
