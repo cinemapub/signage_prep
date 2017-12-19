@@ -28,10 +28,10 @@ option|b|bps|output video bitrate|6M
 option|c|col|color to add|black
 option|d|dur|add duration in seconds|2
 option|g|bg|background image|empty.jpg
+option|l|logdir|folder for log files|$TEMP/signage_prep
 option|r|rat|output video framerate|25
 option|s|scale|scale method: box/stretch/blur|box
-option|l|logdir|folder for log files|log
-option|t|tmpdir|folder for temp files|.tmp
+option|t|tmpdir|folder for temp files|$TEMP/signage_prep
 option|w|wxh|output dimensions|1080x1920
 param|1|action|what to do: APPEND/PREPEND/SCALE/BACKGROUND/EXTRACT
 param|1|input|input file name
@@ -237,7 +237,7 @@ showinfo_video(){
   framerate=$(get_ffprobe "$1" "avg_frame_rate")
   framerate=$(echo "scale=2; $framerate" | bc)
   out "     | $duration sec ($nbframes frames @ $framerate fps)"
-  filesize=$(stat -c%s "$1")
+  filesize=$(du -b "$1" | awk '{print $1}')
   kbsize=$(expr $filesize / 1000)
   bitrate=$(echo $filesize \* 8 / \( $duration \* 1000 \) | bc)
   out "     | $kbsize KB @ $bitrate Kbps"
@@ -249,7 +249,7 @@ showinfo_image(){
   width=$(get_ffprobe "$1" "width")
   height=$(get_ffprobe "$1" "height")
   out "     | $width x $height (WxH)"
-  filesize=$(stat -c%s "$1")
+  filesize=$(du -b "$1" | awk '{print $1}')
   kbsize=$(expr $filesize / 1000)
   out "     | $kbsize KB"
   compression=$(echo $filesize \* 100 / \($width \* $height \* 3 \) | bc)
@@ -401,19 +401,49 @@ main() {
         case $scale in
           BOX|box)
             log "SCALE with method [(letter)box]"
-			run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease, pad=$wout:$hout:($wout-iw)/2:($hout-ih)/2" $fformat -pix_fmt $pix_fmt -y "$output"
+		      	run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease, pad=$wout:$hout:($wout-iw)/2:($hout-ih)/2" $fformat -pix_fmt $pix_fmt -y "$output"
             ;;
 
           STRETCH|stretch)
             log "SCALE with method [stretch]"
-            run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout" \
+            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout},setdar=${wout}:${hout}" \
               $fformat -y "$output"
             ;;
 
           BLUR|blur)
             log "SCALE with method [blur]"
-            run_ffmpeg -i "$input" -i "$input" \
-              -filter_complex "[0:v] scale=w=$wout:h=$hout, boxblur=10:1 [back]; [1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front] ; [back][front] overlay=(W-w)/2:(H-h)/2 " \
+
+            tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.mp4
+            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout},setdar=${wout}:${hout}"  $fformat -y $tmp_bg
+
+            run_ffmpeg -i "$tmp_bg" -i "$input" \
+              -filter_complex "[0:v] boxblur=20:10 [back]; \
+                [1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front] ; \
+                [back][front] overlay=(W-w)/2:(H-h)/2 " \
+              $fformat -y "$output"
+            ;;
+
+          BLUR2|blur2)
+            log "SCALE with method [blur]"
+
+            tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg2.mp4
+            run_ffmpeg -i "$input" -filter_complex "scale=w=$wout:h=$hout:force_original_aspect_ratio=increase, crop=w=$wout:h=$hout"  $fformat -y $tmp_bg
+
+            run_ffmpeg -i "$tmp_bg" -i "$input" \
+              -filter_complex "[0:v] gblur=20:1 [back]; \
+                [1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front] ; \
+                [back][front] overlay=(W-w)/2:(H-h)/2 " \
+              $fformat -y "$output"
+            ;;
+
+          BACKGROUND|background)
+            log "SCALE with method [background]"
+
+            tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.mp4
+            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout},setdar=${wout}:${hout}"  $fformat -y $tmp_bg
+
+            run_ffmpeg -i "$tmp_bg" -i "$input" \
+              -filter_complex "[1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front] ; [0:v][front] overlay=(W-w)/2:(H-h)/2 " \
               $fformat -y "$output"
             ;;
 
