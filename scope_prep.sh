@@ -19,33 +19,38 @@ runasroot=0
 ### param:  comes after the options
 #param|<type>|<long>|<description>
 # where <type> = 1 for single parameters or <type> = n for (last) parameter that can be a list
+[[ -z "$TEMP" ]] && TEMP=/tmp
+
 list_options() {
 echo -n "
+flag|m|mute|remove audio from video
 flag|q|quiet|no output
 flag|v|verbose|output more
-option|s|scale|scale method: box/stretch/blur|box
-option|b|blur|blur strength|10
-option|c|col|color to add|black
-option|l|logdir|folder for log files|log
-option|t|tmpdir|folder for temp files|.tmp
-option|w|wxh|output dimensions|1080x1920
+flag|n|nocrop|don't autodetect crop
+option|b|bps|output video bitrate|50M
+option|g|bg|background image|empty.jpg
+option|l|logdir|folder for log files|$TEMP/signage_prep
+option|r|rat|output video framerate|24
+option|s|scale|scale method: box/stretch/blur/ambi|box
+option|u|radius|blur strenghth|20
+option|t|tmpdir|folder for temp files|$TEMP/signage_prep
+option|w|wxh|output dimensions|2048x858
+option|x|cont|container dimensions|2048x1080
 param|1|action|what to do: SCALE
-param|1|input|input image filename
-param|1|output|output image filename
+param|1|input|input file name
+param|1|output|output file name
 "
 }
 
 # change program version to your own release logic
+readonly PROGNAME=$(basename $0)
+readonly PROGDIR=$(cd $(dirname $0); pwd)
 readonly PROGVERS="v1.0"
 readonly PROGAUTH="p.forret@brightfish.be"
 
 #####################################################################
 ################### DO NOT MODIFY BELOW THIS LINE ###################
 
-readonly PROGNAME=$(basename $0)
-readonly PROGDIR=$(cd $(dirname $0); pwd)
-#readonly TMPDIR=$TMP/$(basename $0 .sh)
-readonly TMPDIR=.tmp
 PROGDATE=$(stat -c %y "$PROGDIR/$PROGNAME" 2>/dev/null | cut -c1-16) # generic linux
 if [[ -z $PROGDATE ]] ; then
   PROGDATE=$(stat -f "%Sm" "$PROGDIR/$PROGNAME" 2>/dev/null) # for MacOS
@@ -221,32 +226,56 @@ parse_options() {
 
 ## Put your script here
 
+showinfo_video(){
+  bname=$(basename "$1")
+  out "Video: $bname"
+  width=$(get_ffprobe "$1" "width")
+  height=$(get_ffprobe "$1" "height")
+  out "     # $width x $height (WxH)"
+  pix_fmt=$(get_ffprobe "$1" "pix_fmt")
+  vid_cod=$(get_ffprobe "$1" "codec_name")
+  out "     # $vid_cod ($pix_fmt)"
+  duration=$(get_ffprobe "$1" "duration" | awk '{printf "%.2f", $1}')
+  nbframes=$(get_ffprobe "$1" "nb_frames")
+  framerate=$(get_ffprobe "$1" "avg_frame_rate")
+  framerate=$(echo "scale=2; $framerate" | bc)
+  out "     # $duration sec ($nbframes frames @ $framerate fps)"
+  filesize=$(du -b "$1" | awk '{print $1}')
+  kbsize=$(expr $filesize / 1000)
+  bitrate=$(echo $filesize \* 8 / \( $duration \* 1000 \) | bc)
+  out "     # $kbsize KB @ $bitrate Kbps"
+}
+
 showinfo_image(){
   bname=$(basename "$1")
   out "Image: [$bname]"
   width=$(get_ffprobe "$1" "width")
   height=$(get_ffprobe "$1" "height")
+  out "     | $width x $height (WxH)"
   filesize=$(du -b "$1" | awk '{print $1}')
   kbsize=$(expr $filesize / 1000)
+  out "     | $kbsize KB"
   compression=$(echo $filesize \* 100 / \($width \* $height \* 3 \) | bc)
-  if [ $compression -lt 100 ] ; then
-  out "     | $width x $height (WxH) - $kbsize KB - compressed to $compression%"
-  else
-  out "     | $width x $height (WxH) - $kbsize KB - no compression"
-  fi 
+  out "     | Compressed $compression %"
 }
 
 get_ffprobe() {
-	# $1 = file
-	# $2 = parameters
-	# reads lines like 'width=1080' and gives back 1080
-		uniq=$(echo "$1" | md5sum | cut -c1-6)
-		tmp_probe=$TMPDIR/$(basename $1 | cut -c1-10).$uniq.probe.txt
-		if [ ! -s "$tmp_probe" -o "$1" -nt "$tmp_probe" ] ; then
-			# only first time
-			ffprobe -show_streams "$1" > $tmp_probe 2>/dev/null
-		fi
-		grep "$2=" "$tmp_probe" | cut -d= -f2- | head -1
+  # $1 = file
+  # $2 = parameters
+  # reads lines like 'width=1080' and gives back 1080
+    uniq=$(echo "$1" | md5sum | cut -c1-6)
+    tmp_probe=$tmpdir/$(basename $1 | cut -c1-10).$uniq.probe.txt
+    if [ ! -s "$tmp_probe" -o "$1" -nt "$tmp_probe" ] ; then
+      # only first time
+      log "get_ffprobe:  use [$tmp_probe]" >&2
+      ffprobe -show_streams "$1" > $tmp_probe 2> /dev/null
+    fi
+    grep "$2=" "$tmp_probe" | cut -d= -f2- | head -1
+}
+
+get_aspect() {
+  # $1 = file
+  ffmpeg -i "$1" -t 5 -vf cropdetect -f null - 2>&1 | awk '/crop/ { print $NF }' | tail -1
 }
 
 if [[ -z "$FFMPEG" ]] ; then
@@ -256,12 +285,12 @@ if [[ -z "$FFMPEG" ]] ; then
     die "No FFMPEG installed (using 'which ffmpeg')"
   fi
 fi
-
+  
 run_ffmpeg(){
   uniq=$(echo "$*" | md5sum | cut -c1-6)
   lastfile=$(echo "$*" | awk '{print $NF}' )
   lname=$(basename $lastfile)
-  logfile="log/ff.$lname.$uniq.log"
+  logfile="$logdir/ff.$lname.$uniq.log"
   log "logfile = [$logfile]"
 
   log "command = [$FFMPEG $@]"
@@ -272,6 +301,7 @@ run_ffmpeg(){
     die "Command failed - check [$logfile]"
   fi
 }
+
 
 main() {
   if [ ! -d $tmpdir ] ; then
@@ -288,105 +318,133 @@ main() {
     log "cleanup log folder [$logdir]"
     find "$logdir" -mtime +7 -exec rm {} \;
   fi
-  fformat="-q:v 1"
+  fformat="-r $rat -b:v $bps"
+  if [ -n "$mute" ] ; then
+    fformat="$fformat -an"
+  fi
+
   log "Using ffmpeg: $FFMPEG"
   log $($FFMPEG -version | head -1)
 
-  log "FFMPEG OUTPUT FORMAT = [$fformat]"
   wout=$(echo $wxh | cut -dx -f1)
   hout=$(echo $wxh | cut -dx -f2)
-  log "Output dimensions: [$wxh] -> $wout x $hout"
+  log "Output dimensions   : [$wxh] -> $wout x $hout"
 
-  case $action in
+  wcont=$(echo $cont | cut -dx -f1)
+  hcont=$(echo $cont | cut -dx -f2)
+  log "Container dimensions: [$cont] -> $wcont x $hcont"
 
-    SCALE|scale )
+  log "FFMPEG OUTPUT FORMAT = [$fformat]"
+  case ${action^^} in
+    SCALE)
+		  showinfo_video $input
 	    width=$(get_ffprobe "$input" "width")
-      if [ ! "$width" -gt 0 ] ; then
-        out "Can't find source width"
-        safe_exit
-      fi
 	    height=$(get_ffprobe "$input" "height")
-      if [ ! "$height" -gt 0 ] ; then
-        out "Can't find source height"
-        safe_exit
-      fi
-      showinfo_image "$input"
-	    maxheight=$(expr $width \* 16 / 9)
-	    log "max height = $maxheight"
-
-      if [ $height -eq $maxheight ] ; then
-        log "just scale (correct aspect ratio)"
-        run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout,format=rgb24" $fformat -y "$output"
+	    pix_fmt=$(get_ffprobe "$input" "pix_fmt")
+	    bname=$(basename "$input")
+      if ((nocrop)) ; then
+        ffcrop=""
       else
-	      # height is smaller => letterbox = black top and bottom
-	      log "create letterbox [$output] ..."
-        # create background
-        case $scale in
-          BOX|box)
-            log "SCALE with method [(letter)box]"
-            run_ffmpeg -i "$input" \
-            	-vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease, pad=$wout:$hout:($wout-iw)/2:($hout-ih)/2:$col,format=rgb24" \
-            	$fformat -y "$output"
-            ;;
+        ffcrop=$(get_aspect "$input")
+        log "Crop detection: $ffcrop"
+        if [[ ! -z "$ffcrop" ]] ; then
+          # e.g. crop=1920:816:0:132
+          crops=${ffcrop#*=}
+          cnums=(${crops//:/ })
+          realw=${cnums[@]:0:1}
+          realh=${cnums[@]:1:1}
+          realaspect=$(expr $realw \* 9 / $realh)
+          out "Crop detection: $realw x $realh ($realaspect:9)"
+          ffcrop="$ffcrop,"
+        fi
+      fi 
 
-          STRETCH|stretch)
-            log "SCALE with method [stretch]"
-            run_ffmpeg -i "$input" \
-            	-vf "scale=w=$wout:h=$hout" \
-            	$fformat -y "$output"
-            ;;
+      case ${scale^^} in
+        BOX)
+          log "SCALE with method [${scale^^}]"
+	      	run_ffmpeg -i "$input" -vf "${ffcrop}scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease,pad=$wout:$hout:($wout-iw)/2:($hout-ih)/2,pad=$wcont:$hcont:($wcont-iw)/2:($hcont-ih)/2" $fformat -pix_fmt $pix_fmt -y "$output"
+          ;;
 
-          BLUR|blur)
-            # create background
-            log "SCALE with method [blur]"
-			tmp_bg=$TMPDIR/$(basename "$input" | cut -c1-10).$wxh.$scale.$blur.bg.jpg
-            if [ $blur -eq 0 ] ; then
-				#run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=increase, crop=w=$wout:h=$hout:(iw-$wout)/2:(ih-$hout)/2" $fformat -y "$tmp_bg"
-				run_ffmpeg -i "$input" \
-					-vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=increase, crop=w=$wout:h=$hout, format=rgb24" \
-					$fformat -y "$tmp_bg"
-           elif [ $blur -lt 0 ] ; then
-        	    tmp_bg1=$TMPDIR/$(basename "$input" | cut -c1-10).$wxh.$blur.bg1.jpg
-	            radius=5
-	            blur=$(expr 0 - $blur)
-	            if [ $blur -le 5 ] ; then
-	              radius=2
-	            fi
-	            w2=$(expr $width / \( $blur \* 4 \) \* 4 )
-	            h2=$(expr $height / \( $blur \* 4 \) \* 4 )
+        STRETCH)
+          log "SCALE with method [${scale^^}]"
+          run_ffmpeg -i "$input" -vf "${ffcrop}scale=${wout}x${hout},pad=$wcont:$hcont:($wcont-iw)/2:($hcont-ih)/2" \
+            $fformat -y "$output"
+          ;;
 
-				w3=$(expr \( $width  + $wout \) / 2 )
-				h3=$(expr \( $height + $hout \) / 2 )
-				run_ffmpeg -i "$input" \
-					-vf "scale=w=$w2:h=$h2, boxblur=$radius:1, scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease, format=rgb24" \
-					$fformat -y "$tmp_bg1"
+        CROP)
+          log "SCALE with method [${scale^^}]"
+          run_ffmpeg -i "$input" -vf "${ffcrop}scale=${wout}x${hout}:force_original_aspect_ratio=increase,crop=w=$wout:h=$hout,pad=$wcont:$hcont:($wcont-iw)/2:($hcont-ih)/2" \
+            $fformat -y "$output"
+          ;;
 
-				run_ffmpeg -i "$tmp_bg1" -i "$tmp_bg1" \
-					-filter_complex "[0:v] scale=w=$wout:h=$hout [back] ; [1:v] scale=w=($wout+iw)/2:h=($hout+ih)/2[front] ; [back][front] overlay=(W-w)/2:(H-h)/2, boxblur=$radius:1, format=rgb24" \
-					$fformat -y "$tmp_bg"
-           else
-	            radius=5
-	            if [ $blur -le 5 ] ; then
-	              radius=2
-	            fi
-	            w2=$(expr $width / \( $blur \* 4 \) \* 4 )
-	            h2=$(expr $height / \( $blur \* 4 \) \* 4 )
-				run_ffmpeg -i "$input" \
-					-vf "scale=w=$w2:h=$h2, boxblur=$radius:1, scale=w=$wout:h=$hout, format=rgb24" \
-					$fformat -y "$tmp_bg"
-            fi
+        AMBI|BLUR)
+          log "SCALE with method [${scale^^}]"
 
-            # now overlay
-            run_ffmpeg -i "$tmp_bg" -i "$input" \
-				-filter_complex "[1:v]scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease[front] ; [0:v][front] overlay=(W-w)/2:(H-h)/2,format=rgb24" \
-				$fformat -y "$output"
-            ;;
+          tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.mp4
+          # first create background video on output resolution
+          if [[ ${scale^^} -eq AMBI ]] ; then
+            run_ffmpeg -i "$input" -vf "${ffcrop}scale=${wout}x${hout},hue=b=1"  $fformat -y $tmp_bg
+          else
+            run_ffmpeg -i "$input" -vf "${ffcrop}scale=${wout}x${hout}" $fformat -y $tmp_bg
+          fi
 
-          *)
-          die "Cannot scale with method [$scale]"
-        esac
-	  fi
-      showinfo_image "$output"
+          run_ffmpeg -i "$tmp_bg" -i "$input" \
+            -filter_complex "[0:v]boxblur=$radius:10[back];[1:v]${ffcrop}scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease[front];[back][front]overlay=(W-w)/2:(H-h)/2,pad=$wcont:$hcont:($wcont-iw)/2:($hcont-ih)/2" \
+            $fformat -y "$output"
+          ;;
+
+        AMBIFULL|FULL)
+          log "SCALE with method [ambifull]"
+
+          tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.mp4
+          # first create background video on output resolution
+          run_ffmpeg -i "$input" -vf "${ffcrop}scale=${wcont}x${hcont},hue=b=-1"  $fformat -y $tmp_bg
+
+          run_ffmpeg -i "$tmp_bg" -i "$input" \
+            -filter_complex "[0:v] boxblur=50:10 [back];[1:v]${ffcrop}scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease[front];[back][front]overlay=(W-w)/2:(H-h)/2" \
+            $fformat -y "$output"
+          ;;
+
+        BACKGROUND)
+          log "SCALE with method [background]"
+
+          tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.mp4
+          # first create background video on output resolution
+          run_ffmpeg -i "$input" -vf "${ffcrop}scale=${wout}x${hout}"  $fformat -y $tmp_bg
+
+          run_ffmpeg -i "$tmp_bg" -i "$input" \
+            -filter_complex "[1:v] ${ffcrop}scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front];[0:v][front] overlay=(W-w)/2:(H-h)/2,pad=$wcont:$hcont:($wcont-iw)/2:($hcont-ih)/2" \
+            $fformat -y "$output"
+          ;;
+
+        IMAGE)
+          # create background with stretch
+          log "SCALE with method [image] (background)"
+          if [ ! -f "$bg" ] ; then
+            die "Cannot find background picture [$bg]"
+          fi
+          tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.png
+          # first create background image on output resolution
+          run_ffmpeg -i "$bg" -vf "scale=w=$wout:h=$hout" $fformat -y "$tmp_bg"
+          # now overlay
+          duration=$(get_ffprobe "$input" "duration" | awk '{printf "%.2f", $1}')
+          run_ffmpeg -loop 1 -i "$tmp_bg" -i "$input" \
+            -filter_complex "[1:v] ${ffcrop}scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [pip];[0:v][pip] overlay=0:(H-h)/2,pad=$wcont:$hcont:($wcont-iw)/2:($hcont-ih)/2" \
+            -t $duration $fformat -y "$output"
+          ;;
+
+        *)
+        die "Cannot scale with method [$scale]"
+      esac
+      showinfo_video $output 
+      outdir=$(dirname "$output")
+      [[ -z "$outdir" ]] && outdir="."
+      bout=$(basename "$output")
+      broot=${bout%.*}
+      outdur=$(get_ffprobe "$output" "duration" | awk '{printf "%.0f", $1}')
+      halfdur=$(expr $outdur / 2)
+      shot="$outdir/$broot.${realaspect}_9.$halfdur.jpg"
+      run_ffmpeg -ss $halfdur -i "$output" -vframes 1 -q:v 3 -y "$shot"
 	    ;;
 
 	*)

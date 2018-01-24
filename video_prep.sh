@@ -19,18 +19,21 @@ runasroot=0
 ### param:  comes after the options
 #param|<type>|<long>|<description>
 # where <type> = 1 for single parameters or <type> = n for (last) parameter that can be a list
+[[ -z "$TEMP" ]] && TEMP=/tmp
+
 list_options() {
 echo -n "
 flag|m|mute|remove audio from video
 flag|q|quiet|no output
 flag|v|verbose|output more
-option|b|bps|output video bitrate|6M
-option|c|col|color to add|black
+option|b|bps|output video bitrate|10M
+option|c|col|what to append: black/last/fade|black
 option|d|dur|add duration in seconds|2
 option|g|bg|background image|empty.jpg
 option|l|logdir|folder for log files|$TEMP/signage_prep
 option|r|rat|output video framerate|25
 option|s|scale|scale method: box/stretch/blur|box
+option|u|radius|blur strenghth|20
 option|t|tmpdir|folder for temp files|$TEMP/signage_prep
 option|w|wxh|output dimensions|1080x1920
 param|1|action|what to do: APPEND/PREPEND/SCALE/BACKGROUND/EXTRACT
@@ -264,24 +267,26 @@ get_ffprobe() {
 		tmp_probe=$tmpdir/$(basename $1 | cut -c1-10).$uniq.probe.txt
 		if [ ! -s "$tmp_probe" -o "$1" -nt "$tmp_probe" ] ; then
 			# only first time
-			ffprobe -show_streams "$1" > $tmp_probe 2>/dev/null
+      log "get_ffprobe:  use [$tmp_probe]" >&2
+			ffprobe -show_streams "$1" > $tmp_probe 2> /dev/null
 		fi
 		grep "$2=" "$tmp_probe" | cut -d= -f2- | head -1
 }
 
+if [[ -z "$FFMPEG" ]] ; then
+  if [[ ! -z $(which ffmpeg) ]] ; then
+    FFMPEG=$(which ffmpeg)
+  else
+    die "No FFMPEG installed (using 'which ffmpeg')"
+  fi
+fi
+  
 run_ffmpeg(){
   uniq=$(echo "$*" | md5sum | cut -c1-6)
   lastfile=$(echo "$*" | awk '{print $NF}' )
   lname=$(basename $lastfile)
   logfile="$logdir/ff.$lname.$uniq.log"
   log "logfile = [$logfile]"
-  if [ -f "/c/tools/ffmpeg64/ffmpeg.exe" ] ; then
-    FFMPEG=/c/tools/ffmpeg64/ffmpeg.exe
-  elif [ -f "/mnt/c/tools/ffmpeg.exe" ] ; then
-    FFMPEG=/mnt/c/tools/ffmpeg.exe
-  else
-    FFMPEG=ffmpeg
-  fi
 
   log "command = [$FFMPEG $@]"
   echo "COMMAND = [$FFMPEG $@]" > $logfile
@@ -312,6 +317,9 @@ main() {
   if [ -n "$mute" ] ; then
     fformat="$fformat -an"
   fi
+
+  log "Using ffmpeg: $FFMPEG"
+  log $($FFMPEG -version | head -1)
 
   wout=$(echo $wxh | cut -dx -f1)
   hout=$(echo $wxh | cut -dx -f2)
@@ -398,62 +406,68 @@ main() {
 	    height=$(get_ffprobe "$input" "height")
 	    pix_fmt=$(get_ffprobe "$input" "pix_fmt")
 	    bname=$(basename "$input")
-        case $scale in
-          BOX|box)
+        case ${scale^^} in
+          BOX)
             log "SCALE with method [(letter)box]"
 		      	run_ffmpeg -i "$input" -vf "scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease, pad=$wout:$hout:($wout-iw)/2:($hout-ih)/2" $fformat -pix_fmt $pix_fmt -y "$output"
             ;;
 
-          STRETCH|stretch)
-            log "SCALE with method [stretch]"
-            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout},setdar=${wout}:${hout}" \
+          STRETCH)
+            log "SCALE with method [STRETCH]"
+            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout}" \
               $fformat -y "$output"
             ;;
 
-          BLUR|blur)
+          CROP)
+            log "SCALE with method [CROP]"
+            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout}:force_original_aspect_ratio=increase, crop=w=$wout:h=$hout" \
+              $fformat -y "$output"
+            ;;
+
+          AMBI)
+            log "SCALE with method [ambi]"
+
+            tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.mp4
+            # first create background video on output resolution
+            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout},hue=b=2:s=2"  $fformat -y $tmp_bg
+
+            run_ffmpeg -i "$tmp_bg" -i "$input" \
+              -filter_complex "[0:v] boxblur=50:10 [back];[1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front];[back][front] overlay=(W-w)/2:(H-h)/2 " \
+              $fformat -y "$output"
+            ;;
+
+          BLUR)
             log "SCALE with method [blur]"
 
             tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.mp4
-            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout},setdar=${wout}:${hout}"  $fformat -y $tmp_bg
+            # first create background video on output resolution
+            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout}" $fformat -y $tmp_bg
 
             run_ffmpeg -i "$tmp_bg" -i "$input" \
-              -filter_complex "[0:v] boxblur=20:10 [back]; \
-                [1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front] ; \
-                [back][front] overlay=(W-w)/2:(H-h)/2 " \
+              -filter_complex "[0:v] boxblur=$radius:10 [back];1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front];[back][front] overlay=(W-w)/2:(H-h)/2" \
               $fformat -y "$output"
             ;;
 
-          BLUR2|blur2)
-            log "SCALE with method [blur]"
-
-            tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg2.mp4
-            run_ffmpeg -i "$input" -filter_complex "scale=w=$wout:h=$hout:force_original_aspect_ratio=increase, crop=w=$wout:h=$hout"  $fformat -y $tmp_bg
-
-            run_ffmpeg -i "$tmp_bg" -i "$input" \
-              -filter_complex "[0:v] gblur=20:1 [back]; \
-                [1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front] ; \
-                [back][front] overlay=(W-w)/2:(H-h)/2 " \
-              $fformat -y "$output"
-            ;;
-
-          BACKGROUND|background)
+          BACKGROUND)
             log "SCALE with method [background]"
 
             tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.mp4
-            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout},setdar=${wout}:${hout}"  $fformat -y $tmp_bg
+            # first create background video on output resolution
+            run_ffmpeg -i "$input" -vf "scale=${wout}x${hout}"  $fformat -y $tmp_bg
 
             run_ffmpeg -i "$tmp_bg" -i "$input" \
-              -filter_complex "[1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front] ; [0:v][front] overlay=(W-w)/2:(H-h)/2 " \
+              -filter_complex "[1:v] scale=w=$wout:h=$hout:force_original_aspect_ratio=decrease [front];[0:v][front] overlay=(W-w)/2:(H-h)/2 " \
               $fformat -y "$output"
             ;;
 
-          IMAGE|image)
+          IMAGE)
             # create background with stretch
             log "SCALE with method [image] (background)"
             if [ ! -f "$bg" ] ; then
               die "Cannot find background picture [$bg]"
             fi
             tmp_bg=$tmpdir/$(basename "$input" | cut -c1-10).bg.png
+            # first create background image on output resolution
             run_ffmpeg -i "$bg" -vf "scale=w=$wout:h=$hout" $fformat -y "$tmp_bg"
             # now overlay
             duration=$(get_ffprobe "$input" "duration" | awk '{printf "%.2f", $1}')
